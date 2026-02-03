@@ -145,9 +145,12 @@ class MQTTPublisher:
         if data.hourly_today:
             for hour in data.hourly_today:
                 h = f"{hour.hour:02d}"
-                self._publish(f"{self._topic_prefix}/hourly/{h}/temperature", hour.temperature, raw=True)
-                self._publish(f"{self._topic_prefix}/hourly/{h}/condition", _wu_to_ha_condition(hour.icon_code), raw=True)
-                self._publish(f"{self._topic_prefix}/hourly/{h}/precipitation", hour.qpf if hour.qpf is not None else 0.0, raw=True)
+                prefix = f"{self._topic_prefix}/hourly/{h}"
+                self._publish(f"{prefix}/temperature", hour.temperature, raw=True)
+                condition = _wu_to_ha_condition(hour.icon_code)
+                self._publish(f"{prefix}/condition", condition, raw=True)
+                precip = hour.qpf if hour.qpf is not None else 0.0
+                self._publish(f"{prefix}/precipitation", precip, raw=True)
             logger.info("published_hourly", hours=len(data.hourly_today))
 
         # Publish HA-compatible state (kept for backward compat)
@@ -157,10 +160,7 @@ class MQTTPublisher:
 
     def _publish(self, topic: str, payload: Any, *, raw: bool = False) -> None:
         """Publish payload to topic. If raw=True, publish as plain string."""
-        if raw:
-            msg = str(payload)
-        else:
-            msg = json.dumps(payload, ensure_ascii=False)
+        msg = str(payload) if raw else json.dumps(payload, ensure_ascii=False)
         result = self._client.publish(topic, msg, retain=self._retain, qos=1)
         result.wait_for_publish(timeout=10)
         logger.debug("mqtt_published", topic=topic, size=len(msg))
@@ -321,7 +321,7 @@ class MQTTPublisher:
                 },
             ]
             for s in hourly_sensors:
-                config: dict[str, Any] = {
+                hourly_cfg: dict[str, Any] = {
                     "name": s["name"],
                     "unique_id": f"wu_mqtt_bridge_{s['key']}",
                     "object_id": f"wu_{s['key']}",
@@ -329,15 +329,15 @@ class MQTTPublisher:
                     "device": device,
                 }
                 if s["device_class"]:
-                    config["device_class"] = s["device_class"]
+                    hourly_cfg["device_class"] = s["device_class"]
                 if s["unit"]:
-                    config["unit_of_measurement"] = s["unit"]
-                    config["state_class"] = "measurement"
+                    hourly_cfg["unit_of_measurement"] = s["unit"]
+                    hourly_cfg["state_class"] = "measurement"
                 if s["icon"]:
-                    config["icon"] = s["icon"]
+                    hourly_cfg["icon"] = s["icon"]
 
                 topic = f"{self._ha_discovery_prefix}/sensor/wu_mqtt_bridge/{s['key']}/config"
-                msg = json.dumps(config, ensure_ascii=False)
+                msg = json.dumps(hourly_cfg, ensure_ascii=False)
                 result = self._client.publish(topic, msg, retain=True, qos=1)
                 result.wait_for_publish(timeout=10)
 

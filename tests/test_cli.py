@@ -36,8 +36,13 @@ class TestCLI:
         respx.get("https://api.weather.com/v3/wx/forecast/hourly/2day").mock(
             return_value=httpx.Response(
                 200,
-                json={"validTimeLocal": [], "temperature": [],
-                       "wxPhraseLong": [], "iconCode": [], "qpf": []},
+                json={
+                    "validTimeLocal": [],
+                    "temperature": [],
+                    "wxPhraseLong": [],
+                    "iconCode": [],
+                    "qpf": [],
+                },
             )
         )
 
@@ -79,8 +84,13 @@ class TestCLI:
         respx.get("https://api.weather.com/v3/wx/forecast/hourly/2day").mock(
             return_value=httpx.Response(
                 200,
-                json={"validTimeLocal": [], "temperature": [],
-                       "wxPhraseLong": [], "iconCode": [], "qpf": []},
+                json={
+                    "validTimeLocal": [],
+                    "temperature": [],
+                    "wxPhraseLong": [],
+                    "iconCode": [],
+                    "qpf": [],
+                },
             )
         )
 

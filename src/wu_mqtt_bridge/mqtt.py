@@ -90,7 +90,7 @@ class MQTTPublisher:
 
         self._client = mqtt_client.Client(
             client_id=client_id,
-            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,  # type: ignore[attr-defined]
         )
         if username:
             self._client.username_pw_set(username, password)

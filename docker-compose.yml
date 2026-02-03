@@ -1,0 +1,25 @@
+# Local development stack with Mosquitto broker
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 3 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  wu-mqtt-bridge:
+    build: .
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      WU_GEOCODE: "${WU_GEOCODE:-48.86,2.35}"
+      WU_LANGUAGE: "${WU_LANGUAGE:-fr-FR}"
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"

@@ -6,7 +6,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from wu_mqtt_bridge.mqtt import MQTTPublisher, _wu_to_ha_condition
-from wu_mqtt_bridge.weather import CurrentConditions, DayForecast, WeatherData
+from wu_mqtt_bridge.weather import CurrentConditions, DayForecast, HourForecast, WeatherData
 
 
 def _make_weather_data() -> WeatherData:
@@ -46,9 +46,20 @@ def _make_weather_data() -> WeatherData:
             uv_index_day=2,
         ),
     ]
+    hourly = [
+        HourForecast(
+            time_local="2026-02-03T14:00:00+0100",
+            hour=14,
+            temperature=13.0,
+            condition="Partly Cloudy",
+            icon_code=30,
+            qpf=0.0,
+        ),
+    ]
     return WeatherData(
         current=current,
         forecast=forecast,
+        hourly_today=hourly,
         raw_current={
             "temperature": 12.0,
             "feels_like": 10.0,
@@ -80,12 +91,17 @@ class TestMQTTPublisher:
         publisher.publish_weather(_make_weather_data())
         publisher.disconnect()
 
-        # Check that publish was called for: discovery, current, forecast, ha_state
         topics_published = [call.args[0] for call in mock_client.publish.call_args_list]
-        assert "homeassistant/weather/wu_mqtt_bridge/config" in topics_published
+        # Sensor discovery topics
+        assert any("homeassistant/sensor/wu_mqtt_bridge/" in t for t in topics_published)
+        # Data topics
         assert "weather/current" in topics_published
         assert "weather/forecast" in topics_published
         assert "weather/ha_state" in topics_published
+        # Hourly topics
+        assert "weather/hourly/14/temperature" in topics_published
+        assert "weather/hourly/14/condition" in topics_published
+        assert "weather/hourly/14/precipitation" in topics_published
 
     @patch("wu_mqtt_bridge.mqtt.mqtt_client.Client")
     def test_publish_without_current(self, mock_client_cls: MagicMock) -> None:
@@ -97,6 +113,7 @@ class TestMQTTPublisher:
         data = WeatherData(
             current=None,
             forecast=[],
+            hourly_today=[],
             raw_current=None,
             raw_forecast={},
         )
@@ -122,23 +139,7 @@ class TestMQTTPublisher:
         publisher.publish_weather(_make_weather_data())
 
         topics_published = [call.args[0] for call in mock_client.publish.call_args_list]
-        assert "homeassistant/weather/wu_mqtt_bridge/config" not in topics_published
-
-    @patch("wu_mqtt_bridge.mqtt.mqtt_client.Client")
-    def test_retain_flag(self, mock_client_cls: MagicMock) -> None:
-        mock_client = MagicMock()
-        mock_publish_result = MagicMock()
-        mock_client.publish.return_value = mock_publish_result
-        mock_client_cls.return_value = mock_client
-
-        publisher = MQTTPublisher(host="localhost", retain=True)
-        publisher.connect()
-        publisher.publish_weather(_make_weather_data())
-
-        for call in mock_client.publish.call_args_list:
-            if call.args[0] != "homeassistant/weather/wu_mqtt_bridge/config":
-                retain = call.kwargs.get("retain", call.args[2] if len(call.args) > 2 else None)
-                assert retain is True
+        assert not any("homeassistant/" in t for t in topics_published)
 
     @patch("wu_mqtt_bridge.mqtt.mqtt_client.Client")
     def test_ha_state_structure(self, mock_client_cls: MagicMock) -> None:

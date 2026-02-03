@@ -18,7 +18,7 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "0.2.0" in result.output
 
     def test_run_missing_geocode(self) -> None:
         runner = CliRunner(env={"WU_GEOCODE": ""})
@@ -33,6 +33,13 @@ class TestCLI:
         respx.get("https://api.weather.com/v3/wx/forecast/daily/5day").mock(
             return_value=httpx.Response(200, json=forecast_response)
         )
+        respx.get("https://api.weather.com/v3/wx/forecast/hourly/2day").mock(
+            return_value=httpx.Response(
+                200,
+                json={"validTimeLocal": [], "temperature": [],
+                       "wxPhraseLong": [], "iconCode": [], "qpf": []},
+            )
+        )
 
         runner = CliRunner(env={"WU_GEOCODE": "48.86,2.35"})
         result = runner.invoke(cli, ["run", "--dry-run"])
@@ -45,6 +52,9 @@ class TestCLI:
             return_value=httpx.Response(403)
         )
         respx.get("https://api.weather.com/v3/wx/forecast/daily/5day").mock(
+            return_value=httpx.Response(500)
+        )
+        respx.get("https://api.weather.com/v3/wx/forecast/hourly/2day").mock(
             return_value=httpx.Response(500)
         )
 
@@ -65,6 +75,13 @@ class TestCLI:
         )
         respx.get("https://api.weather.com/v3/wx/forecast/daily/5day").mock(
             return_value=httpx.Response(200, json=forecast_response)
+        )
+        respx.get("https://api.weather.com/v3/wx/forecast/hourly/2day").mock(
+            return_value=httpx.Response(
+                200,
+                json={"validTimeLocal": [], "temperature": [],
+                       "wxPhraseLong": [], "iconCode": [], "qpf": []},
+            )
         )
 
         mock_publisher = MagicMock()

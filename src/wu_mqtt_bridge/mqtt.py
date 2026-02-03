@@ -110,32 +110,57 @@ class MQTTPublisher:
     def publish_weather(self, data: WeatherData) -> None:
         """Publish weather data to MQTT topics."""
         if self._ha_discovery:
-            self._publish_ha_discovery()
+            self._publish_ha_sensor_discovery(data)
 
-        # Publish current conditions
-        if data.raw_current is not None:
-            self._publish(
-                f"{self._topic_prefix}/current",
-                data.raw_current,
-            )
+        # Publish current conditions as individual sensor values
+        if data.current is not None:
+            sensors = {
+                "temperature": data.current.temperature,
+                "feels_like": data.current.feels_like,
+                "humidity": data.current.humidity,
+                "wind_speed": data.current.wind_speed,
+                "wind_direction": data.current.wind_direction_cardinal,
+                "pressure": data.current.pressure,
+                "visibility": data.current.visibility,
+                "uv_index": data.current.uv_index,
+                "condition": _wu_to_ha_condition(data.current.icon_code),
+            }
+            for key, value in sensors.items():
+                if value is not None:
+                    self._publish(f"{self._topic_prefix}/{key}", value, raw=True)
             logger.info(
                 "published_current_conditions",
-                temperature=data.raw_current.get("temperature"),
+                temperature=data.current.temperature,
             )
 
-        # Publish forecast as array
+        # Publish raw current + forecast for advanced consumers
+        if data.raw_current is not None:
+            self._publish(f"{self._topic_prefix}/current", data.raw_current)
+
         forecast_payload = [asdict(day) for day in data.forecast]
         self._publish(f"{self._topic_prefix}/forecast", forecast_payload)
         logger.info("published_forecast", days=len(data.forecast))
 
-        # Publish HA-compatible state for weather entity
+        # Publish hourly forecast for today
+        if data.hourly_today:
+            for hour in data.hourly_today:
+                h = f"{hour.hour:02d}"
+                self._publish(f"{self._topic_prefix}/hourly/{h}/temperature", hour.temperature, raw=True)
+                self._publish(f"{self._topic_prefix}/hourly/{h}/condition", _wu_to_ha_condition(hour.icon_code), raw=True)
+                self._publish(f"{self._topic_prefix}/hourly/{h}/precipitation", hour.qpf if hour.qpf is not None else 0.0, raw=True)
+            logger.info("published_hourly", hours=len(data.hourly_today))
+
+        # Publish HA-compatible state (kept for backward compat)
         ha_state = self._build_ha_state(data)
         self._publish(f"{self._topic_prefix}/ha_state", ha_state)
         logger.info("published_ha_state")
 
-    def _publish(self, topic: str, payload: Any) -> None:
-        """Publish JSON payload to topic."""
-        msg = json.dumps(payload, ensure_ascii=False)
+    def _publish(self, topic: str, payload: Any, *, raw: bool = False) -> None:
+        """Publish payload to topic. If raw=True, publish as plain string."""
+        if raw:
+            msg = str(payload)
+        else:
+            msg = json.dumps(payload, ensure_ascii=False)
         result = self._client.publish(topic, msg, retain=self._retain, qos=1)
         result.wait_for_publish(timeout=10)
         logger.debug("mqtt_published", topic=topic, size=len(msg))
@@ -170,39 +195,160 @@ class MQTTPublisher:
 
         return state
 
-    def _publish_ha_discovery(self) -> None:
-        """Publish HA MQTT auto-discovery config for weather entity."""
-        config = {
+    def _publish_ha_sensor_discovery(self, data: WeatherData) -> None:
+        """Publish HA MQTT auto-discovery config as individual sensors."""
+        device = {
+            "identifiers": ["wu_mqtt_bridge"],
             "name": "Weather Underground",
-            "unique_id": "wu_mqtt_bridge_weather",
-            "object_id": "wu_mqtt_bridge",
-            "state_topic": f"{self._topic_prefix}/ha_state",
-            "temperature_unit": "°C",
-            "wind_speed_unit": "km/h",
-            "pressure_unit": "hPa",
-            "visibility_unit": "km",
-            "precipitation_unit": "mm",
-            "temperature_template": "{{ value_json.temperature }}",
-            "humidity_template": "{{ value_json.humidity }}",
-            "wind_speed_template": "{{ value_json.wind_speed }}",
-            "wind_bearing_template": "{{ value_json.wind_bearing }}",
-            "pressure_template": "{{ value_json.pressure }}",
-            "visibility_template": "{{ value_json.visibility }}",
-            "condition_template": "{{ value_json.condition }}",
-            "forecast_daily_topic": f"{self._topic_prefix}/ha_state",
-            "forecast_daily_template": "{{ value_json.forecast | tojson }}",
-            "device": {
-                "identifiers": ["wu_mqtt_bridge"],
-                "name": "WU MQTT Bridge",
-                "model": "wu-mqtt-bridge",
-                "manufacturer": "wu-mqtt-bridge",
-            },
+            "model": "wu-mqtt-bridge",
+            "manufacturer": "wu-mqtt-bridge",
         }
-        topic = f"{self._ha_discovery_prefix}/weather/wu_mqtt_bridge/config"
-        msg = json.dumps(config, ensure_ascii=False)
-        result = self._client.publish(topic, msg, retain=True, qos=1)
+
+        sensors: list[dict[str, Any]] = [
+            {
+                "key": "temperature",
+                "name": "Température",
+                "device_class": "temperature",
+                "unit": "°C",
+                "icon": None,
+            },
+            {
+                "key": "feels_like",
+                "name": "Température ressentie",
+                "device_class": "temperature",
+                "unit": "°C",
+                "icon": None,
+            },
+            {
+                "key": "humidity",
+                "name": "Humidité",
+                "device_class": "humidity",
+                "unit": "%",
+                "icon": None,
+            },
+            {
+                "key": "wind_speed",
+                "name": "Vent",
+                "device_class": "wind_speed",
+                "unit": "km/h",
+                "icon": None,
+            },
+            {
+                "key": "wind_direction",
+                "name": "Direction du vent",
+                "device_class": None,
+                "unit": None,
+                "icon": "mdi:compass-outline",
+            },
+            {
+                "key": "pressure",
+                "name": "Pression",
+                "device_class": "atmospheric_pressure",
+                "unit": "hPa",
+                "icon": None,
+            },
+            {
+                "key": "visibility",
+                "name": "Visibilité",
+                "device_class": "distance",
+                "unit": "km",
+                "icon": None,
+            },
+            {
+                "key": "uv_index",
+                "name": "Indice UV",
+                "device_class": None,
+                "unit": None,
+                "icon": "mdi:sun-wireless-outline",
+            },
+            {
+                "key": "condition",
+                "name": "Condition",
+                "device_class": None,
+                "unit": None,
+                "icon": "mdi:weather-partly-cloudy",
+            },
+        ]
+
+        for sensor in sensors:
+            config: dict[str, Any] = {
+                "name": sensor["name"],
+                "unique_id": f"wu_mqtt_bridge_{sensor['key']}",
+                "object_id": f"wu_{sensor['key']}",
+                "state_topic": f"{self._topic_prefix}/{sensor['key']}",
+                "device": device,
+            }
+            if sensor["device_class"]:
+                config["device_class"] = sensor["device_class"]
+            if sensor["unit"]:
+                config["unit_of_measurement"] = sensor["unit"]
+                config["state_class"] = "measurement"
+            if sensor["icon"]:
+                config["icon"] = sensor["icon"]
+
+            topic = f"{self._ha_discovery_prefix}/sensor/wu_mqtt_bridge/{sensor['key']}/config"
+            msg = json.dumps(config, ensure_ascii=False)
+            result = self._client.publish(topic, msg, retain=True, qos=1)
+            result.wait_for_publish(timeout=10)
+
+        # Hourly sensors for today
+        for hour in data.hourly_today:
+            h = f"{hour.hour:02d}"
+            hourly_sensors = [
+                {
+                    "key": f"hourly_{h}_temperature",
+                    "name": f"Température {h}h",
+                    "topic": f"{self._topic_prefix}/hourly/{h}/temperature",
+                    "device_class": "temperature",
+                    "unit": "°C",
+                    "icon": None,
+                },
+                {
+                    "key": f"hourly_{h}_condition",
+                    "name": f"Condition {h}h",
+                    "topic": f"{self._topic_prefix}/hourly/{h}/condition",
+                    "device_class": None,
+                    "unit": None,
+                    "icon": "mdi:weather-partly-cloudy",
+                },
+                {
+                    "key": f"hourly_{h}_precipitation",
+                    "name": f"Précipitations {h}h",
+                    "topic": f"{self._topic_prefix}/hourly/{h}/precipitation",
+                    "device_class": "precipitation",
+                    "unit": "mm",
+                    "icon": None,
+                },
+            ]
+            for s in hourly_sensors:
+                config: dict[str, Any] = {
+                    "name": s["name"],
+                    "unique_id": f"wu_mqtt_bridge_{s['key']}",
+                    "object_id": f"wu_{s['key']}",
+                    "state_topic": s["topic"],
+                    "device": device,
+                }
+                if s["device_class"]:
+                    config["device_class"] = s["device_class"]
+                if s["unit"]:
+                    config["unit_of_measurement"] = s["unit"]
+                    config["state_class"] = "measurement"
+                if s["icon"]:
+                    config["icon"] = s["icon"]
+
+                topic = f"{self._ha_discovery_prefix}/sensor/wu_mqtt_bridge/{s['key']}/config"
+                msg = json.dumps(config, ensure_ascii=False)
+                result = self._client.publish(topic, msg, retain=True, qos=1)
+                result.wait_for_publish(timeout=10)
+
+        logger.debug("ha_hourly_discovery_published", hours=len(data.hourly_today))
+
+        # Clean up old weather entity discovery
+        old_topic = f"{self._ha_discovery_prefix}/weather/wu_mqtt_bridge/config"
+        result = self._client.publish(old_topic, "", retain=True, qos=1)
         result.wait_for_publish(timeout=10)
-        logger.debug("ha_discovery_published", topic=topic)
+
+        logger.debug("ha_sensor_discovery_published", count=len(sensors))
 
 
 def _wu_to_ha_condition(icon_code: int | None) -> str:

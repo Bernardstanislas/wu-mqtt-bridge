@@ -13,6 +13,7 @@ logger = structlog.get_logger()
 
 WU_BASE_URL = "https://api.weather.com/v3/wx"
 FORECAST_PATH = "/forecast/daily/5day"
+HOURLY_PATH = "/forecast/hourly/2day"
 CURRENT_PATH = "/observations/current"
 
 # Timeout for API requests (seconds).
@@ -61,11 +62,24 @@ class DayForecast:
 
 
 @dataclass(frozen=True)
+class HourForecast:
+    """Single hour forecast."""
+
+    time_local: str  # ISO datetime from validTimeLocal
+    hour: int  # 0-23
+    temperature: float | None
+    condition: str | None
+    icon_code: int | None
+    qpf: float | None  # precipitation in mm
+
+
+@dataclass(frozen=True)
 class WeatherData:
     """Complete weather data bundle."""
 
     current: CurrentConditions | None
     forecast: list[DayForecast]
+    hourly_today: list[HourForecast]
     raw_current: dict[str, Any] | None
     raw_forecast: dict[str, Any]
 
@@ -134,10 +148,27 @@ class WeatherClient:
         logger.debug("forecast_raw", data=json.dumps(data)[:500])
         return _parse_forecast(data), data
 
+    def fetch_hourly(self) -> list[HourForecast]:
+        """Fetch hourly forecast and return today's hours."""
+        url = f"{WU_BASE_URL}{HOURLY_PATH}"
+        try:
+            resp = self._http.get(url, params=self._params())
+            resp.raise_for_status()
+            data = resp.json()
+            logger.debug("hourly_raw", data=json.dumps(data)[:500])
+            return _parse_hourly(data)
+        except httpx.HTTPStatusError as e:
+            logger.warning("hourly_fetch_failed", status=e.response.status_code)
+            return []
+        except Exception as e:
+            logger.warning("hourly_fetch_error", error=str(e))
+            return []
+
     def fetch_all(self) -> WeatherData:
-        """Fetch current conditions + forecast."""
+        """Fetch current conditions + forecast + hourly."""
         current = self.fetch_current()
         forecast, raw_forecast = self.fetch_forecast()
+        hourly_today = self.fetch_hourly()
 
         raw_current: dict[str, Any] | None = None
         if current is not None:
@@ -158,6 +189,7 @@ class WeatherClient:
         return WeatherData(
             current=current,
             forecast=forecast,
+            hourly_today=hourly_today,
             raw_current=raw_current,
             raw_forecast=raw_forecast,
         )
@@ -213,6 +245,40 @@ def _parse_forecast(data: dict[str, Any]) -> list[DayForecast]:
         )
 
     return forecasts
+
+
+def _parse_hourly(data: dict[str, Any]) -> list[HourForecast]:
+    """Parse WU hourly response, returning only today's hours."""
+    valid_times = data.get("validTimeLocal", [])
+    temperatures = data.get("temperature", [])
+    conditions = data.get("wxPhraseLong", [])
+    icon_codes = data.get("iconCode", [])
+    qpf_values = data.get("qpf", [])
+
+    if not valid_times:
+        return []
+
+    # Determine today's date from the first entry's local time
+    today = valid_times[0][:10]
+
+    hours: list[HourForecast] = []
+    for i, time_str in enumerate(valid_times):
+        if time_str[:10] != today:
+            continue
+        # Extract hour from ISO datetime e.g. "2026-02-03T22:00:00+0100"
+        hour = int(time_str[11:13])
+        hours.append(
+            HourForecast(
+                time_local=time_str,
+                hour=hour,
+                temperature=_safe_idx(temperatures, i),
+                condition=_safe_idx(conditions, i),
+                icon_code=_safe_idx(icon_codes, i),
+                qpf=_safe_idx(qpf_values, i),
+            )
+        )
+
+    return hours
 
 
 def _safe_idx(lst: list[Any], idx: int) -> Any:
